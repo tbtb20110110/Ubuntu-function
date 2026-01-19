@@ -42,9 +42,11 @@ locale-gen zh_CN.UTF-8
 update-locale LANG=zh_CN.UTF-8
 green "中文环境配置完成！"
 
-# ===================== 2. 终端美化（oh-my-zsh + Powerlevel10k） =====================
+# ===================== 2. 终端美化（oh-my-zsh + Powerlevel10k + 系统字体） =====================
 info "===== 开始安装终端美化组件 ====="
-apt install -y zsh wget git fonts-powerline curl
+# 安装依赖+替代字体（Fira Code Nerd Font，Ubuntu官方仓库直接提供）
+apt install -y zsh wget git fonts-powerline curl fonts-firacode
+fc-cache -fv
 
 # 安装 oh-my-zsh
 OH_MY_ZSH_DIR="${USER_HOME}/.oh-my-zsh"
@@ -72,36 +74,23 @@ else
     info "zsh 主题已配置为 Powerlevel10k，跳过！"
 fi
 
-# 下载 Meslo 字体（换回 GitHub 官方源 + 强容错）
-info "正在下载 Meslo 字体（GitHub 官方源）..."
-FONT_DIR="/usr/share/fonts"
-# 换回 GitHub 官方字体地址
-FONT_GITHUB_URL="https://github.com/romkatv/powerlevel10k-media/raw/master"
-FONT_FILES=("MesloLGS NF Regular.ttf" "MesloLGS NF Bold.ttf" "MesloLGS NF Italic.ttf" "MesloLGS NF Bold Italic.ttf")
+# 配置 Powerlevel10k 兼容 Fira Code 字体（添加配置到 .zshrc）
+P10K_FONT_CONF="POWERLEVEL9K_MODE=\"nerdfont-complete\""
+if ! grep -q "$P10K_FONT_CONF" "${USER_HOME}/.zshrc"; then
+    echo -e "\n# Powerlevel10k 字体兼容配置" >> "${USER_HOME}/.zshrc"
+    echo "$P10K_FONT_CONF" >> "${USER_HOME}/.zshrc"
+    info "已添加 Powerlevel10k 字体兼容配置！"
+else
+    info "Powerlevel10k 字体配置已存在，跳过！"
+fi
 
-for font in "${FONT_FILES[@]}"; do
-    FONT_PATH="${FONT_DIR}/${font}"
-    FONT_URL="${FONT_GITHUB_URL}/${font// /%20}"
-    
-    if [ ! -f "$FONT_PATH" ]; then
-        # 强制跳过 SSL + 超时 20 秒 + 重试 5 次
-        if ! wget --no-check-certificate -nv -P "$FONT_DIR" "$FONT_URL" -T 20 --tries=5; then
-            warn "===== 字体 ${font} 下载失败 ====="
-            warn "手动下载链接：${FONT_URL}"
-            warn "下载后放到 ${FONT_DIR} 目录，执行 sudo fc-cache -fv"
-        fi
-    else
-        info "字体 ${font} 已存在，跳过下载！"
-    fi
-done
-fc-cache -fv
 green "终端美化组件安装完成！"
 
-# ===================== 3. 桌面美化（换回 WhiteSur GitHub 官方源） =====================
+# ===================== 3. 桌面美化（WhiteSur 官方 GitHub 源） =====================
 info "===== 开始安装桌面美化组件 ====="
 apt install -y gnome-tweaks gnome-shell-extensions chrome-gnome-shell
 
-# 安装 WhiteSur 主题（官方 GitHub 源，无鉴权）
+# 安装 WhiteSur 主题
 WHITESUR_THEME_DIR="/tmp/WhiteSur-gtk-theme"
 if [ ! -d "$WHITESUR_THEME_DIR" ]; then
     info "正在克隆 WhiteSur 主题（GitHub 官方）..."
@@ -111,7 +100,7 @@ else
 fi
 bash "${WHITESUR_THEME_DIR}/install.sh" -t all
 
-# 安装 WhiteSur 图标（官方 GitHub 源）
+# 安装 WhiteSur 图标
 WHITESUR_ICON_DIR="/tmp/WhiteSur-icon-theme"
 if [ ! -d "$WHITESUR_ICON_DIR" ]; then
     info "正在克隆 WhiteSur 图标（GitHub 官方）..."
@@ -121,7 +110,7 @@ else
 fi
 bash "${WHITESUR_ICON_DIR}/install.sh"
 
-# 安装 WhiteSur 光标（官方 GitHub 源）
+# 安装 WhiteSur 光标
 WHITESUR_CURSOR_DIR="/tmp/WhiteSur-cursors"
 if [ ! -d "$WHITESUR_CURSOR_DIR" ]; then
     info "正在克隆 WhiteSur 光标（GitHub 官方）..."
@@ -163,9 +152,10 @@ green "指纹配置完成！"
 green "===== Ubuntu 仿 Win11 一键美化脚本执行完成！ ====="
 info "=============================================="
 info "  1. 重启系统生效所有配置：sudo reboot"
-info "  2. 终端首次启动会触发 Powerlevel10k 配置向导，请选择中文"
-info "  3. 桌面配置：安装 Dash to Panel + Windows 11 Style Menu 插件"
-info "  4. 主题应用：GNOME Tweaks → 外观 → 选择 WhiteSur 系列"
-info "  5. Grub 美化：sudo grub-customizer 自定义启动菜单"
-info "  6. 指纹登录：系统设置 → 用户 → 录入指纹"
+info "  2. 终端首次启动触发 Powerlevel10k 配置向导 → 选中文 → 字体选 Fira Code"
+info "  3. 终端字体设置：偏好设置 → 配置文件 → 文本 → 字体选择 Fira Code"
+info "  4. 桌面配置：安装 Dash to Panel + Windows 11 Style Menu 插件"
+info "  5. 主题应用：GNOME Tweaks → 外观 → 选择 WhiteSur 系列"
+info "  6. Grub 美化：sudo grub-customizer 自定义启动菜单"
+info "  7. 指纹登录：系统设置 → 用户 → 录入指纹"
 info "=============================================="

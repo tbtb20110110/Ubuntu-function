@@ -11,5 +11,6 @@
 ## 使用步骤
 ### 1. 下载脚本
 ```bash
-git clone https://github.com/tbtb20110110/Ubuntu-function.git
-cd ubuntu-win11-beautify
+wget -q https://raw.githubusercontent.com/tbtb20110110/Ubuntu-function/main/function.sh -O function.sh
+chmod +x function.sh
+bash./function.sh

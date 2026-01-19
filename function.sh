@@ -37,7 +37,7 @@ fix_architecture() {
     echo "✅ 架构修复完成"
 }
 
-# 系统准备（源配置+依赖安装+PPA源修复）
+# 系统准备（源配置+依赖安装+手动安装grub-customizer）
 stage_prepare() {
     echo -e "\n========== 阶段1：系统准备 =========="
     echo "🔧 安装源管理工具..."
@@ -47,12 +47,14 @@ stage_prepare() {
     add-apt-repository main restricted universe multiverse -y
     apt update -y && apt upgrade -y
 
-    echo "🔧 添加 grub-customizer 官方 PPA 源（解决包定位问题）..."
-    add-apt-repository ppa:danielrichter2007/grub-customizer -y
-    apt update -y
+    echo "🔧 手动安装 grub-customizer（跳过PPA，国内网络友好）..."
+    # 下载对应amd64架构的deb包
+    wget -qO /tmp/grub-customizer.deb https://launchpad.net/~danielrichter2007/+archive/ubuntu/grub-customizer/+files/grub-customizer_5.2.3-1ubuntu1_amd64.deb
+    dpkg -i /tmp/grub-customizer.deb || apt -f install -y
+    rm -f /tmp/grub-customizer.deb
 
     echo "📦 安装核心依赖..."
-    apt install -y git wget curl unzip gnome-tweaks gnome-shell-extension-manager language-pack-zh-hans fonts-wqy-microhei fprintd libpam-fprintd grub-customizer
+    apt install -y git wget curl unzip gnome-tweaks gnome-shell-extension-manager language-pack-zh-hans fonts-wqy-microhei fprintd libpam-fprintd
 
     echo "🌐 配置中文环境..."
     locale-gen zh_CN.UTF-8
@@ -111,7 +113,7 @@ stage_fingerprint() {
 main() {
     clear
     echo "======================================"
-    echo "  最终版 Ubuntu 一键美化脚本（仿Win11）"
+    echo "  全网友好版 Ubuntu 一键美化脚本（仿Win11）"
     echo "  适配：华为MateBook 15d | x86_64架构"
     echo "======================================"
     check_root

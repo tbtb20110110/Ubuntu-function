@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# 颜色输出函数（全英文半角符号，避免语法错误）
+# 颜色输出函数
 green() {
     echo -e "\033[32m$1\033[0m"
 }
@@ -46,7 +46,7 @@ green "中文环境配置完成！"
 info "===== 开始安装终端美化组件 ====="
 apt install -y zsh wget git fonts-powerline curl
 
-# 安装 oh-my-zsh（判断是否已安装）
+# 安装 oh-my-zsh
 OH_MY_ZSH_DIR="${USER_HOME}/.oh-my-zsh"
 if [ ! -d "$OH_MY_ZSH_DIR" ]; then
     info "正在安装 oh-my-zsh..."
@@ -55,7 +55,7 @@ else
     info "oh-my-zsh 已安装，跳过！"
 fi
 
-# 安装 Powerlevel10k（判断目录是否存在）
+# 安装 Powerlevel10k
 P10K_DIR="${USER_HOME}/.oh-my-zsh/custom/themes/powerlevel10k"
 if [ ! -d "$P10K_DIR" ]; then
     info "正在安装 Powerlevel10k 主题..."
@@ -64,7 +64,7 @@ else
     info "Powerlevel10k 主题已存在，跳过克隆！"
 fi
 
-# 配置 zsh 主题（判断是否已配置）
+# 配置 zsh 主题
 if ! grep -q 'ZSH_THEME="powerlevel10k/powerlevel10k"' "${USER_HOME}/.zshrc"; then
     info "正在配置 zsh 主题..."
     sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="powerlevel10k\/powerlevel10k"/g' "${USER_HOME}/.zshrc"
@@ -72,19 +72,23 @@ else
     info "zsh 主题已配置为 Powerlevel10k，跳过！"
 fi
 
-# 下载 Meslo Nerd Font 字体（国内 Gitee 镜像 + 容错）
-info "正在下载 Meslo 字体（国内镜像源）..."
+# 下载 Meslo 字体（换回 GitHub 官方源 + 强容错）
+info "正在下载 Meslo 字体（GitHub 官方源）..."
 FONT_DIR="/usr/share/fonts"
-FONT_MIRROR_URL="https://gitee.com/laomocode/meslo-nerd-font/raw/master"
+# 换回 GitHub 官方字体地址
+FONT_GITHUB_URL="https://github.com/romkatv/powerlevel10k-media/raw/master"
 FONT_FILES=("MesloLGS NF Regular.ttf" "MesloLGS NF Bold.ttf" "MesloLGS NF Italic.ttf" "MesloLGS NF Bold Italic.ttf")
 
 for font in "${FONT_FILES[@]}"; do
     FONT_PATH="${FONT_DIR}/${font}"
-    FONT_URL="${FONT_MIRROR_URL}/${font// /%20}"
+    FONT_URL="${FONT_GITHUB_URL}/${font// /%20}"
+    
     if [ ! -f "$FONT_PATH" ]; then
-        if ! wget --no-check-certificate -P "$FONT_DIR" "$FONT_URL" -T 10 --tries=3; then
-            warn "字体 ${font} 下载失败！请手动下载到 ${FONT_DIR} 目录"
-            warn "手动链接：${FONT_URL}"
+        # 强制跳过 SSL + 超时 20 秒 + 重试 5 次
+        if ! wget --no-check-certificate -nv -P "$FONT_DIR" "$FONT_URL" -T 20 --tries=5; then
+            warn "===== 字体 ${font} 下载失败 ====="
+            warn "手动下载链接：${FONT_URL}"
+            warn "下载后放到 ${FONT_DIR} 目录，执行 sudo fc-cache -fv"
         fi
     else
         info "字体 ${font} 已存在，跳过下载！"
@@ -93,35 +97,35 @@ done
 fc-cache -fv
 green "终端美化组件安装完成！"
 
-# ===================== 3. 桌面美化（WhiteSur 主题 + 图标 + 光标） =====================
+# ===================== 3. 桌面美化（换回 WhiteSur GitHub 官方源） =====================
 info "===== 开始安装桌面美化组件 ====="
 apt install -y gnome-tweaks gnome-shell-extensions chrome-gnome-shell
 
-# 安装 WhiteSur 主题
+# 安装 WhiteSur 主题（官方 GitHub 源，无鉴权）
 WHITESUR_THEME_DIR="/tmp/WhiteSur-gtk-theme"
 if [ ! -d "$WHITESUR_THEME_DIR" ]; then
-    info "正在克隆 WhiteSur 主题..."
-    sudo -u $SUDO_USER git clone -c http.sslVerify=false --depth=1 https://gitee.com/laomocode/WhiteSur-gtk-theme.git ${WHITESUR_THEME_DIR}
+    info "正在克隆 WhiteSur 主题（GitHub 官方）..."
+    sudo -u $SUDO_USER git clone -c http.sslVerify=false --depth=1 https://github.com/vinceliuice/WhiteSur-gtk-theme.git ${WHITESUR_THEME_DIR}
 else
     info "WhiteSur 主题临时目录已存在，跳过克隆！"
 fi
 bash "${WHITESUR_THEME_DIR}/install.sh" -t all
 
-# 安装 WhiteSur 图标
+# 安装 WhiteSur 图标（官方 GitHub 源）
 WHITESUR_ICON_DIR="/tmp/WhiteSur-icon-theme"
 if [ ! -d "$WHITESUR_ICON_DIR" ]; then
-    info "正在克隆 WhiteSur 图标..."
-    sudo -u $SUDO_USER git clone -c http.sslVerify=false --depth=1 https://gitee.com/laomocode/WhiteSur-icon-theme.git ${WHITESUR_ICON_DIR}
+    info "正在克隆 WhiteSur 图标（GitHub 官方）..."
+    sudo -u $SUDO_USER git clone -c http.sslVerify=false --depth=1 https://github.com/vinceliuice/WhiteSur-icon-theme.git ${WHITESUR_ICON_DIR}
 else
     info "WhiteSur 图标临时目录已存在，跳过克隆！"
 fi
 bash "${WHITESUR_ICON_DIR}/install.sh"
 
-# 安装 WhiteSur 光标
+# 安装 WhiteSur 光标（官方 GitHub 源）
 WHITESUR_CURSOR_DIR="/tmp/WhiteSur-cursors"
 if [ ! -d "$WHITESUR_CURSOR_DIR" ]; then
-    info "正在克隆 WhiteSur 光标..."
-    sudo -u $SUDO_USER git clone -c http.sslVerify=false --depth=1 https://gitee.com/laomocode/WhiteSur-cursors.git ${WHITESUR_CURSOR_DIR}
+    info "正在克隆 WhiteSur 光标（GitHub 官方）..."
+    sudo -u $SUDO_USER git clone -c http.sslVerify=false --depth=1 https://github.com/vinceliuice/WhiteSur-cursors.git ${WHITESUR_CURSOR_DIR}
 else
     info "WhiteSur 光标临时目录已存在，跳过克隆！"
 fi
@@ -160,8 +164,8 @@ green "===== Ubuntu 仿 Win11 一键美化脚本执行完成！ ====="
 info "=============================================="
 info "  1. 重启系统生效所有配置：sudo reboot"
 info "  2. 终端首次启动会触发 Powerlevel10k 配置向导，请选择中文"
-info "  3. 桌面配置：打开 GNOME 插件商店安装 Dash to Panel + Windows 11 Style Menu"
+info "  3. 桌面配置：安装 Dash to Panel + Windows 11 Style Menu 插件"
 info "  4. 主题应用：GNOME Tweaks → 外观 → 选择 WhiteSur 系列"
-info "  5. Grub 美化：运行 sudo grub-customizer 自定义背景和启动项"
-info "  6. 指纹登录：系统设置 → 用户 → 录入指纹即可使用"
+info "  5. Grub 美化：sudo grub-customizer 自定义启动菜单"
+info "  6. 指纹登录：系统设置 → 用户 → 录入指纹"
 info "=============================================="

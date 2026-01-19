@@ -1,208 +1,80 @@
 #!/bin/bash
 set -euo pipefail
 
-# ==================== 自定义配置项（用户可修改） ====================
-TERMINAL_COLOR_SCHEME="16"   # Dracula配色编号
-WIN11_THEME_STYLE="light"    # light/dark 主题风格
-GRUB_THEME="win10dark"       # Win11风格Grub主题
-FONT_NAME="MesloLGS NF"      # 终端字体
-# ====================================================================
+# 颜色输出函数
+green() { echo -e "\033[32m$1\033[0m"; }
+red() { echo -e "\033[31m$1\033[0m"; }
+info() { echo -e "\033[36m$1\033[0m"; }
 
-# 全局检查：root权限
-check_root() {
-    if [ "$(id -u)" -ne 0 ]; then
-        echo "❌ 请使用sudo权限运行：sudo bash $0"
-        exit 1
-    fi
-}
+# 检查是否为 root 权限
+if [ $EUID -ne 0 ]; then
+    red "错误：请使用 sudo 或 root 权限运行此脚本！"
+    exit 1
+fi
 
-# 全局检查：系统版本
-check_ubuntu_version() {
-    if ! lsb_release -a 2>/dev/null | grep -q "Ubuntu 22.04\|Ubuntu 24.04"; then
-        echo "⚠️  当前系统非Ubuntu 22.04/24.04 LTS，可能存在兼容性问题"
-        read -p "是否继续执行？(y/n): " choice
-        [ "$choice" != "y" ] && exit 0
-    fi
-}
+# ===================== 1. 系统初始化 & 中文环境配置 =====================
+info "===== 开始配置系统中文环境 ====="
+apt update -y && apt install -y language-pack-zh-hans language-pack-zh-hans-base
+# 设置默认 locale 为中文
+echo "zh_CN.UTF-8 UTF-8" > /etc/locale.conf
+locale-gen zh_CN.UTF-8
+update-locale LANG=zh_CN.UTF-8
+green "中文环境配置完成！"
 
-# 修复架构问题（移除多余arm64）
-fix_architecture() {
-    echo -e "\n========== 前置修复：清理多余架构 =========="
-    ARCH=$(dpkg --print-architecture)
-    FOREIGN_ARCH=$(dpkg --print-foreign-architectures)
-    if [ "$ARCH" = "amd64" ] && echo "$FOREIGN_ARCH" | grep -q "arm64"; then
-        echo "🔧 检测到amd64架构下启用了arm64，正在移除..."
-        dpkg --remove-architecture arm64
-    fi
-    echo "✅ 架构修复完成"
-}
+# ===================== 2. 终端美化（oh-my-zsh + Powerlevel10k） =====================
+info "===== 开始安装终端美化组件 ====="
+# 安装依赖
+apt install -y zsh wget git fonts-powerline curl
+# 安装 oh-my-zsh（自动跳过交互）
+sh -c "$(curl -fsSL --no-check-certificate https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+# 安装 Powerlevel10k 主题
+git clone -c http.sslVerify=false --depth=1 https://github.com/romkatv/powerlevel10k.git ${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k
+# 配置 zsh 主题
+sed -i 's/ZSH_THEME="robbyrussell"/ZSH_THEME="powerlevel10k\/powerlevel10k"/g' $HOME/.zshrc
+# 下载 Meslo Nerd Font 字体（跳过 SSL 校验）
+info "===== 开始下载 Meslo 字体 ====="
+FONT_DIR="/usr/share/fonts"
+wget --no-check-certificate -P $FONT_DIR https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Regular.ttf
+wget --no-check-certificate -P $FONT_DIR https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold.ttf
+wget --no-check-certificate -P $FONT_DIR https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Italic.ttf
+wget --no-check-certificate -P $FONT_DIR https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold%20Italic.ttf
+fc-cache -fv
+green "终端美化组件安装完成！"
 
-# ==================== 功能模块定义 ====================
-# 模块1：系统准备（源配置+依赖+grub-customizer安装）
-module_prepare() {
-    fix_architecture
-    echo -e "\n========== 模块1：系统准备（国内网络友好） =========="
-    echo "🔧 安装源管理工具..."
-    apt install -y software-properties-common
+# ===================== 3. 桌面美化（WhiteSur 主题 + GNOME 插件依赖） =====================
+info "===== 开始安装桌面美化组件 ====="
+apt install -y gnome-tweaks gnome-shell-extensions chrome-gnome-shell
+# 下载 WhiteSur 主题（使用公开 Gitee 镜像，无鉴权）
+git clone -c http.sslVerify=false --depth=1 https://gitee.com/laomocode/WhiteSur-gtk-theme.git /tmp/WhiteSur-gtk-theme
+# 安装主题（仅保留有效参数）
+bash /tmp/WhiteSur-gtk-theme/install.sh -t all
+# 下载 WhiteSur 图标
+git clone -c http.sslVerify=false --depth=1 https://gitee.com/laomocode/WhiteSur-icon-theme.git /tmp/WhiteSur-icon-theme
+bash /tmp/WhiteSur-icon-theme/install.sh
+# 下载 WhiteSur 光标
+git clone -c http.sslVerify=false --depth=1 https://gitee.com/laomocode/WhiteSur-cursors.git /tmp/WhiteSur-cursors
+bash /tmp/WhiteSur-cursors/install.sh
+# 清理临时文件
+rm -rf /tmp/WhiteSur-*
+green "桌面主题安装完成！"
 
-    echo "🔧 启用官方软件源组件..."
-    add-apt-repository main restricted universe multiverse -y
-    apt update -y && apt upgrade -y
+# ===================== 4. Grub 美化工具安装 =====================
+info "===== 开始安装 Grub 美化工具 ====="
+add-apt-repository -y ppa:danielrichter2007/grub-customizer
+apt update -y && apt install -y grub-customizer
+green "Grub Customizer 安装完成！"
 
-    echo "🔧 国内加速安装 grub-customizer..."
-    GRUB_DEB_URL="https://mirror.ghproxy.com/https://launchpad.net/~danielrichter2007/+archive/ubuntu/grub-customizer/+files/grub-customizer_5.2.3-1ubuntu1_amd64.deb"
-    wget -qO /tmp/grub-customizer.deb "${GRUB_DEB_URL}"
-    
-    if [ ! -f /tmp/grub-customizer.deb ]; then
-        echo "❌ grub-customizer deb包下载失败，请手动下载后放到/tmp目录"
-        return 1
-    fi
+# ===================== 5. 华为 MateBook 15d 指纹适配 =====================
+info "===== 开始配置指纹登录 & sudo 验证 ====="
+apt install -y fprintd libpam-fprintd
+# 配置 sudo 指纹验证
+echo "auth sufficient pam_fprintd.so" >> /etc/pam.d/sudo
+green "指纹配置完成！请重启后在系统设置中录入指纹！"
 
-    dpkg -i /tmp/grub-customizer.deb || apt -f install -y
-    rm -f /tmp/grub-customizer.deb
-
-    echo "📦 安装核心依赖..."
-    apt install -y git wget curl unzip gnome-tweaks gnome-shell-extension-manager language-pack-zh-hans fonts-wqy-microhei fprintd libpam-fprintd
-
-    echo "🌐 配置中文环境..."
-    locale-gen zh_CN.UTF-8
-    update-locale LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8
-    echo "✅ 模块1执行完成"
-}
-
-# 模块2：终端美化（字体+配色）
-module_terminal() {
-    echo -e "\n========== 模块2：终端美化 =========="
-    echo "🔤 安装 ${FONT_NAME} 字体..."
-    mkdir -p /tmp/fonts
-    wget -qO /tmp/fonts/Meslo.zip https://github.com/ryanoasis/nerd-fonts/releases/download/v3.2.1/Meslo.zip
-    unzip -q /tmp/fonts/Meslo.zip -d /usr/share/fonts
-    fc-cache -fv
-    rm -rf /tmp/fonts
-
-    echo "🎨 安装Dracula配色方案..."
-    echo "${TERMINAL_COLOR_SCHEME}" | bash -c "$(wget -qO- https://git.io/vQgMr)"
-    echo "✅ 模块2执行完成"
-    echo "💡 提示：重启终端后，在首选项中选择 ${FONT_NAME} 字体和Dracula配色"
-}
-
-# 模块3：桌面仿Win11美化
-module_desktop() {
-    echo -e "\n========== 模块3：桌面仿Win11美化 =========="
-    echo "🎨 安装WhiteSur GTK主题..."
-    # 国内Gitee镜像，防止GitHub克隆失败
-    git clone --depth=1 https://gitee.com/mirrors/WhiteSur-gtk-theme.git /tmp/WhiteSur-theme || git clone --depth=1 https://github.com/vinceliuice/WhiteSur-gtk-theme.git /tmp/WhiteSur-theme
-    bash /tmp/WhiteSur-theme/install.sh -t all -i blue -c ${WIN11_THEME_STYLE}
-    rm -rf /tmp/WhiteSur-theme
-
-    echo "🖼️  安装WhiteSur图标主题..."
-    git clone --depth=1 https://gitee.com/mirrors/WhiteSur-icon-theme.git /tmp/WhiteSur-icon || git clone --depth=1 https://github.com/vinceliuice/WhiteSur-icon-theme.git /tmp/WhiteSur-icon
-    bash /tmp/WhiteSur-icon/install.sh
-    rm -rf /tmp/WhiteSur-icon
-
-    echo "🔌 启用基础GNOME扩展..."
-    gnome-extensions enable user-theme@gnome-shell-extensions.gcampax.github.com || true
-    echo "✅ 模块3执行完成"
-    echo "💡 提示：需手动在扩展管理器启用 Dash to Panel、Win11 Window Titlebars、Desktop Icons NG"
-}
-
-# 模块4：Grub启动菜单美化
-module_grub() {
-    echo -e "\n========== 模块4：Grub启动菜单美化 =========="
-    echo "🎨 安装Win11风格Grub主题..."
-    git clone --depth=1 https://github.com/ChrisTitusTech/Top-5-Bootloader-Themes.git /tmp/grub-themes
-    echo "${GRUB_THEME}" | bash /tmp/grub-themes/install.sh
-    rm -rf /tmp/grub-themes
-
-    echo "🔧 更新Grub配置..."
-    update-grub
-    echo "✅ 模块4执行完成"
-}
-
-# 模块5：指纹适配（登录+sudo验证）
-module_fingerprint() {
-    echo -e "\n========== 模块5：指纹适配（登录+sudo） =========="
-    echo "🔧 备份PAM配置文件..."
-    cp /etc/pam.d/common-auth /etc/pam.d/common-auth.bak
-
-    echo "🔧 配置指纹用于sudo验证..."
-    sed -i '1i auth    sufficient    pam_fprintd.so' /etc/pam.d/common-auth
-    echo "✅ 模块5执行完成"
-    echo "💡 提示：重启后在 设置→用户→指纹登录 中录入指纹"
-}
-
-# 模块0：完整美化流程
-module_full() {
-    echo -e "\n========== 执行完整美化流程 =========="
-    module_prepare
-    module_terminal
-    module_desktop
-    module_grub
-    module_fingerprint
-    echo -e "\n🎉 完整流程执行完成！请重启系统后进行手动配置"
-}
-
-# ==================== 交互式菜单 ====================
-show_menu() {
-    clear
-    echo "======================================"
-    echo "  Ubuntu 仿Win11美化脚本（分步菜单版）"
-    echo "  适配：华为MateBook 15d | x86_64架构"
-    echo "======================================"
-    echo "  0. 执行完整美化流程（所有模块）"
-    echo "  1. 模块1：系统准备（必选前置步骤）"
-    echo "  2. 模块2：终端美化（字体+配色）"
-    echo "  3. 模块3：桌面仿Win11美化"
-    echo "  4. 模块4：Grub启动菜单美化"
-    echo "  5. 模块5：指纹适配（登录+sudo）"
-    echo "  6. 退出脚本"
-    echo "======================================"
-}
-
-# 主函数：菜单交互
-main() {
-    check_root
-    check_ubuntu_version
-
-    while true; do
-        show_menu
-        read -p "请输入要执行的模块编号 [0-6]：" choice
-        case $choice in
-            0)
-                module_full
-                break
-                ;;
-            1)
-                module_prepare
-                read -p "按任意键返回菜单..."
-                ;;
-            2)
-                module_terminal
-                read -p "按任意键返回菜单..."
-                ;;
-            3)
-                module_desktop
-                read -p "按任意键返回菜单..."
-                ;;
-            4)
-                module_grub
-                read -p "按任意键返回菜单..."
-                ;;
-            5)
-                module_fingerprint
-                read -p "按任意键返回菜单..."
-                ;;
-            6)
-                echo "👋 退出脚本，再见！"
-                exit 0
-                ;;
-            *)
-                echo "❌ 无效输入，请输入0-6之间的编号"
-                read -p "按任意键返回菜单..."
-                ;;
-        esac
-    done
-}
-
-# 启动菜单
-main
+# ===================== 脚本结束提示 =====================
+green "===== 一键美化脚本执行完成！ ====="
+info "1. 重启系统后生效所有配置：sudo reboot"
+info "2. 终端首次启动会触发 Powerlevel10k 配置向导，请选择中文选项"
+info "3. 桌面美化需在 GNOME 插件商店安装 Dash to Panel + Windows 11 Style Menu"
+info "4. Grub 美化请运行 sudo grub-customizer 进行配置"
+info "5. 指纹登录请在 系统设置->用户 中录入指纹"

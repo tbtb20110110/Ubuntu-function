@@ -3,8 +3,18 @@ set -euo pipefail
 
 # 颜色输出函数
 green() { echo -e "\033[32m$1\033[0m"; }
+red() { echo -e "\033[31m$1\033[0 raw 地址 SSL 连接不稳定**，即使加了 `--no-check-certificate` 也无法下载。解决方案是 **替换字体下载源为国内镜像**，并在脚本中增加**下载失败容错逻辑**。
+
+### 最终修复版完整脚本（字体源替换+容错）
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# 颜色输出函数
+green() { echo -e "\033[32m$1\033[0m"; }
 red() { echo -e "\033[31m$1\033[0m"; }
 info() { echo -e "\033[36m$1\033[0m"; }
+warn() { echo -e "\033[33m$1\033[0m"; }
 
 # ===================== 权限 & 环境检查 =====================
 if [ $EUID -ne 0 ]; then
@@ -63,16 +73,27 @@ else
     info "zsh 主题已配置为 Powerlevel10k，跳过！"
 fi
 
-# 下载 Meslo Nerd Font 字体
-info "正在下载 Meslo 字体..."
+# 下载 Meslo Nerd Font 字体（替换为国内 Gitee 镜像源 + 容错）
+info "正在下载 Meslo 字体（国内镜像源）..."
 FONT_DIR="/usr/share/fonts"
-FONT_FILES=("MesloLGS%20NF%20Regular.ttf" "MesloLGS%20NF%20Bold.ttf" "MesloLGS%20NF%20Italic.ttf" "MesloLGS%20NF%20Bold%20Italic.ttf")
+# 国内 Gitee 镜像字体地址（替代 GitHub raw）
+FONT_MIRROR_URL="https://gitee.com/laomocode/meslo-nerd-font/raw/master"
+FONT_FILES=("MesloLGS NF Regular.ttf" "MesloLGS NF Bold.ttf" "MesloLGS NF Italic.ttf" "MesloLGS NF Bold Italic.ttf")
+
 for font in "${FONT_FILES[@]}"; do
-    FONT_PATH="${FONT_DIR}/${font//%20/ }"
+    FONT_PATH="${FONT_DIR}/${font}"
+    # 转义空格为 %20 适配 URL
+    FONT_URL="${FONT_MIRROR_URL}/${font// /%20}"
+    
     if [ ! -f "$FONT_PATH" ]; then
-        wget --no-check-certificate -P $FONT_DIR https://github.com/romkatv/powerlevel10k-media/raw/master/${font}
+        # 带 SSL 跳过 + 重试 3 次
+        if ! wget --no-check-certificate -P $FONT_DIR $FONT_URL -T 10 --tries=3; then
+            warn "字体 ${font} 下载失败！请手动下载以下链接的文件到 ${FONT_DIR} 目录："
+            warn "手动下载链接：${FONT_URL}"
+            warn "或访问 https://github.com/romkatv/powerlevel10k-media/tree/master 下载全部 Meslo 字体"
+        fi
     else
-        info "字体 ${font//%20/ } 已存在，跳过下载！"
+        info "字体 ${font} 已存在，跳过下载！"
     fi
 done
 fc-cache -fv

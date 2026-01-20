@@ -15,6 +15,53 @@ warn() {
     echo -e "\033[33m$1\033[0m"
 }
 
+# 进度显示
+TOTAL_STEPS=0
+CURRENT_STEP=0
+init_progress() {
+    TOTAL_STEPS=$1
+}
+show_progress() {
+    CURRENT_STEP=$((CURRENT_STEP + 1))
+    local percentage=$((CURRENT_STEP * 100 / TOTAL_STEPS))
+    echo -ne "\r["
+    for ((i=0; i<percentage/2; i++)); do echo -ne "="; done
+    echo -ne ">"
+    for ((i=percentage/2; i<50; i++)); do echo -ne " "; done
+    echo -ne "] $percentage%  "
+}
+
+# 回滚管理
+BACKUP_FILES=()
+ROLLBACK_STEPS=()
+register_backup() {
+    local file="$1"
+    local backup="${file}.bak_$(date +%Y%m%d%H%M%S)"
+    if [ -f "$file" ] && [ ! -f "$backup" ]; then
+        cp "$file" "$backup"
+        BACKUP_FILES+=("$backup")
+        info "已备份: $file → $backup"
+    fi
+}
+register_rollback_step() {
+    ROLLBACK_STEPS+=("$1")
+}
+cleanup_on_error() {
+    red "脚本执行失败，正在回滚..."
+    for (( idx=${#ROLLBACK_STEPS[@]}-1 ; idx>=0 ; idx-- )); do
+        eval "${ROLLBACK_STEPS[idx]}" 2>/dev/null || true
+    done
+    for backup in "${BACKUP_FILES[@]}"; do
+        if [ -f "$backup" ]; then
+            local original="${backup%.bak_*}"
+            mv "$backup" "$original" 2>/dev/null || true
+            info "已恢复: $backup → $original"
+        fi
+    done
+    exit 1
+}
+trap cleanup_on_error ERR
+
 # 日志记录
 LOG_FILE="/tmp/ubuntu-beautify-$(date +%Y%m%d-%H%M%S).log"
 exec 2> >(tee -a "$LOG_FILE" >&2)
@@ -25,7 +72,7 @@ backup_file() {
     local file="$1"
     if [ -f "$file" ] && [ ! -f "${file}.bak" ]; then
         cp "$file" "${file}.bak"
-        info "已备份: $file → ${file}.bak"
+        register_backup "$file"
     fi
 }
 
@@ -82,6 +129,7 @@ set_network_proxy() {
 Acquire::http::Proxy "${HTTP_PROXY}";
 Acquire::https::Proxy "${HTTPS_PROXY:-${HTTP_PROXY}}";
 EOF
+            register_rollback_step "rm -f /etc/apt/apt.conf.d/proxy.conf"
         fi
     fi
 }
@@ -112,38 +160,101 @@ check_ubuntu_version() {
     info "检测到 Ubuntu $VERSION ($VERSION_CODENAME)"
 }
 
-# 检查网络连接
+# 改进的网络连接检查
 check_internet_connection() {
     info "检查网络连接..."
-    if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
-        green "网络连接正常"
-        return 0
-    elif ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1; then
-        green "网络连接正常"
-        return 0
-    elif ping -c 1 -W 2 114.114.114.114 >/dev/null 2>&1; then
-        green "网络连接正常"
-        return 0
-    else
-        warn "无法连接到互联网"
-        read -p "是否继续离线安装？(y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
+    local test_urls=(
+        "8.8.8.8"
+        "1.1.1.1" 
+        "114.114.114.114"
+        "www.baidu.com"
+        "www.github.com"
+    )
+    
+    for url in "${test_urls[@]}"; do
+        if ping -c 1 -W 2 "$url" >/dev/null 2>&1; then
+            green "网络连接正常 (通过 $url)"
+            return 0
         fi
+    done
+    
+    # 尝试HTTP连接
+    if curl -s --connect-timeout 5 https://raw.githubusercontent.com >/dev/null 2>&1; then
+        green "网络连接正常 (通过HTTPS)"
+        return 0
+    fi
+    
+    warn "无法连接到互联网"
+    read -p "是否继续离线安装？(y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
         return 1
+    else
+        exit 1
     fi
 }
 
-# 华为指纹设备配置
+# 完整性验证
+verify_critical_files() {
+    info "验证关键系统文件..."
+    local critical_files=(
+        "/etc/passwd"
+        "/etc/shadow" 
+        "/etc/sudoers"
+        "/etc/fstab"
+        "${USER_HOME}/.bashrc"
+        "${USER_HOME}/.zshrc"
+    )
+    
+    local errors=0
+    for file in "${critical_files[@]}"; do
+        if [ -f "$file" ]; then
+            if [ ! -s "$file" ]; then
+                red "警告：关键文件为空: $file"
+                ((errors++))
+            fi
+        fi
+    done
+    
+    if [ $errors -eq 0 ]; then
+        green "关键文件验证通过"
+    else
+        warn "发现 $errors 个关键文件问题"
+    fi
+    return $errors
+}
+
+# 改进的华为指纹设备配置
 configure_huawei_fingerprint() {
     info "检测华为指纹设备..."
     
-    if lsusb | grep -i -E "(huawei|goodix)" | grep -i -E "(fingerprint|biometric)" >/dev/null; then
-        info "检测到华为/Goodix指纹设备"
+    local fingerprint_device=$(lsusb | grep -i -E "(huawei|goodix|elan|synaptics|authen)" | grep -i -E "(fingerprint|biometric)")
+    
+    if [ -n "$fingerprint_device" ]; then
+        info "检测到指纹设备: $fingerprint_device"
         
-        # 安装额外驱动
-        retry_command "apt install -y libfprint-2-tod1 libfprint-2-tod-goodix fprintd libpam-fprintd"
+        # 安装通用指纹支持
+        local fingerprint_packages=(
+            "fprintd"
+            "libpam-fprintd"
+            "libfprint-2-2"
+            "libfprint-2-tod1"
+        )
+        
+        for pkg in "${fingerprint_packages[@]}"; do
+            if ! dpkg -l | grep -q "^ii  $pkg"; then
+                retry_command "apt install -y $pkg"
+            fi
+        done
+        
+        # 根据具体设备类型配置
+        if echo "$fingerprint_device" | grep -q "258a:"; then
+            info "配置Goodix指纹设备..."
+            configure_goodix_fingerprint
+        elif echo "$fingerprint_device" | grep -q "04f3:"; then
+            info "配置Elan指纹设备..."
+            configure_elan_fingerprint
+        fi
         
         # 检查并添加udev规则
         if lsusb | grep -q "258a:"; then
@@ -157,15 +268,41 @@ EOF
                 udevadm control --reload-rules
                 udevadm trigger
                 info "已添加Goodix指纹设备udev规则"
+                register_rollback_step "rm -f /etc/udev/rules.d/99-fingerprint.rules"
             fi
         fi
         
+        # 启用PAM配置
+        if command -v pam-auth-update >/dev/null; then
+            echo "fprintd" | pam-auth-update --enable
+        fi
+        
         # 重启指纹服务
+        systemctl enable fprintd.service
         systemctl restart fprintd.service
         
+        green "指纹配置完成"
     else
-        warn "未检测到华为指纹设备，跳过特定配置"
+        warn "未检测到指纹设备，跳过特定配置"
     fi
+}
+
+configure_goodix_fingerprint() {
+    info "安装Goodix指纹驱动..."
+    retry_command "apt install -y libfprint-2-tod1 libfprint-2-tod-goodix"
+    
+    # 添加PPA获取最新驱动（仅限Ubuntu 20.04+）
+    if lsb_release -rs | grep -q "^2[0-9]"; then
+        retry_command "add-apt-repository -y ppa:uunicorn/open-fprintd"
+        retry_command "apt update -y"
+        retry_command "apt install -y open-fprintd fprintd-clients"
+    fi
+}
+
+configure_elan_fingerprint() {
+    info "配置Elan指纹设备..."
+    # Elan设备通常由libfprint自动支持
+    retry_command "apt install -y libfprint-2-tod-elan"
 }
 
 # 优化系统性能
@@ -173,9 +310,10 @@ optimize_system_performance() {
     info "优化系统性能..."
     
     # 禁用 tracker（文件索引，占用CPU）
-    if systemctl --user list-unit-files | grep -q tracker; then
+    if systemctl --user list-unit-files 2>/dev/null | grep -q tracker; then
         systemctl --user mask tracker-store.service tracker-miner-fs.service tracker-miner-rss.service tracker-extract.service tracker-miner-apps.service 2>/dev/null || true
         info "已禁用 tracker 服务"
+        register_rollback_step "systemctl --user unmask tracker-store.service tracker-miner-fs.service tracker-miner-rss.service tracker-extract.service tracker-miner-apps.service 2>/dev/null || true"
     fi
     
     # 调整交换性（swapiness）
@@ -183,6 +321,7 @@ optimize_system_performance() {
         sysctl vm.swappiness=10 2>/dev/null || true
         if ! grep -q "vm.swappiness" /etc/sysctl.conf; then
             echo "vm.swappiness=10" >> /etc/sysctl.conf
+            register_rollback_step "sed -i '/vm.swappiness=10/d' /etc/sysctl.conf"
         fi
     fi
     
@@ -195,7 +334,7 @@ optimize_system_performance() {
     if [ -f /etc/fstab ]; then
         backup_file "/etc/fstab"
         # 为SSD优化
-        if lsblk -d -o rota | grep -q "0"; then
+        if lsblk -d -o rota 2>/dev/null | grep -q "0"; then
             sed -i '/ext4/s/defaults/defaults,noatime,nodiratime,discard/' /etc/fstab 2>/dev/null || true
         fi
     fi
@@ -212,33 +351,76 @@ optimize_system_performance() {
         if systemctl is-enabled "$service" 2>/dev/null | grep -q enabled; then
             systemctl disable "$service" 2>/dev/null || true
             warn "已禁用服务: $service"
+            register_rollback_step "systemctl enable $service 2>/dev/null || true"
         fi
     done
 }
 
-# 备用字体方案
+# 改进的字体安装
 install_fonts_alternative() {
-    info "安装备用字体方案..."
+    info "安装系统字体..."
     
-    # 安装微软字体
-    if ! dpkg -l | grep -q fonts-microsoft; then
-        retry_command "apt install -y fonts-microsoft-core fonts-microsoft ttf-mscorefonts-installer"
+    # 创建字体缓存目录
+    mkdir -p /usr/local/share/fonts/
+    
+    # 安装基础字体包
+    local font_packages=(
+        "fonts-powerline"
+        "fonts-firacode"
+        "fonts-noto-cjk-extra"
+        "fonts-noto-color-emoji"
+        "fonts-wqy-microhei"
+        "fonts-wqy-zenhei"
+        "fonts-arphic-ukai"
+        "fonts-arphic-uming"
+        "fonts-liberation"
+        "fonts-dejavu"
+    )
+    
+    for pkg in "${font_packages[@]}"; do
+        if ! dpkg -l | grep -q "^ii  $pkg"; then
+            retry_command "apt install -y $pkg"
+        fi
+    done
+    
+    # 尝试安装微软字体
+    if ! dpkg -l | grep -q ttf-mscorefonts-installer; then
+        retry_command "apt install -y ttf-mscorefonts-installer"
     fi
     
-    # 安装苹果字体
-    if ! dpkg -l | grep -q fonts-sil-charis; then
-        retry_command "apt install -y fonts-sil-charis fonts-sil-gentium"
+    # 从可靠源下载额外字体
+    if [ "$ONLINE_MODE" = true ]; then
+        install_nerd_fonts
     fi
-    
-    # 安装思源字体
-    if ! dpkg -l | grep -q fonts-noto-cjk-extra; then
-        retry_command "apt install -y fonts-noto-cjk-extra fonts-noto-color-emoji"
-    fi
-    
-    # 安装中文字体
-    retry_command "apt install -y fonts-wqy-microhei fonts-wqy-zenhei fonts-arphic-ukai fonts-arphic-uming"
     
     # 重建字体缓存
+    fc-cache -fv
+}
+
+install_nerd_fonts() {
+    info "安装 Nerd Fonts..."
+    
+    # 创建字体目录
+    local font_dir="/usr/share/fonts/truetype/nerd-fonts"
+    mkdir -p "$font_dir"
+    
+    # 下载并安装 FiraCode Nerd Font
+    local font_url="https://github.com/ryanoasis/nerd-fonts/releases/download/v3.0.2/FiraCode.zip"
+    local font_file="/tmp/FiraCode-NerdFont.zip"
+    
+    if wget --show-progress --timeout=30 --tries=3 -O "$font_file" "$font_url" 2>/dev/null; then
+        unzip -q "$font_file" -d "$font_dir"
+        rm -f "$font_file"
+        
+        # 设置正确权限
+        find "$font_dir" -type f -name "*.ttf" -exec chmod 644 {} \;
+        
+        info "FiraCode Nerd Font 安装成功！"
+        register_rollback_step "rm -rf $font_dir"
+    else
+        warn "无法下载 FiraCode Nerd Font，使用系统自带的 Fira Code 字体"
+    fi
+    
     fc-cache -fv
 }
 
@@ -283,6 +465,9 @@ verify_installation() {
     check_component "WhiteSur主题" "[ -d /usr/share/themes/WhiteSur-dark ]" "true"
     check_component "WhiteSur图标" "[ -d /usr/share/icons/WhiteSur ]" "true"
     check_component "Nerd Fonts" "fc-list | grep -q 'FiraCode Nerd Font'" "true"
+    
+    # 验证关键文件
+    verify_critical_files || ((warnings++))
     
     echo
     info "=============================================="
@@ -412,7 +597,11 @@ set_network_proxy
 # 显示安装菜单
 show_menu
 
+# 估算总步骤数
+init_progress 20
+
 # 检查网络连接
+show_progress
 if check_internet_connection; then
     ONLINE_MODE=true
     info "在线模式：将从网络下载资源"
@@ -426,10 +615,12 @@ export GIT_SSL_NO_VERIFY=1
 export GITHUB_API_URL="https://api.github.com"
 
 # 更新系统包
+show_progress
 info "更新系统包列表..."
 retry_command "apt update -y"
 
 # ===================== 1. 系统初始化 & 中文环境配置 =====================
+show_progress
 info "===== 开始配置系统中文环境 ====="
 retry_command "apt install -y language-pack-zh-hans language-pack-zh-hans-base locales"
 
@@ -442,13 +633,16 @@ update-locale LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8
 export LANG=zh_CN.UTF-8
 export LANGUAGE=zh_CN:zh
 export LC_ALL=zh_CN.UTF-8
+register_rollback_step "update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8"
 
 # 安装字体
+show_progress
 install_fonts_alternative
 green "中文环境配置完成！"
 
 # ===================== 2. 性能优化（可选） =====================
 if [ "$INSTALL_PERFORMANCE" = true ]; then
+    show_progress
     info "===== 开始系统性能优化 ====="
     optimize_system_performance
     green "系统性能优化完成！"
@@ -456,13 +650,14 @@ fi
 
 # ===================== 3. 终端美化（可选） =====================
 if [ "$INSTALL_TERMINAL" = true ]; then
+    show_progress
     info "===== 开始安装终端美化组件 ====="
     
     # 安装基础依赖
     retry_command "apt install -y zsh wget git curl fontconfig unzip"
     
     # 安装字体
-    retry_command "apt install -y fonts-powerline fonts-firacode")
+    retry_command "apt install -y fonts-powerline fonts-firacode"
     
     # 下载并安装 Nerd Fonts
     if [ "$ONLINE_MODE" = true ]; then
@@ -598,11 +793,12 @@ fi
 
 # ===================== 4. 桌面美化（可选） =====================
 if [ "$INSTALL_DESKTOP" = true ]; then
+    show_progress
     info "===== 开始安装桌面美化组件 ====="
     
     # 安装基础依赖
-    retry_command "apt install -y gnome-tweaks gnome-shell-extension-manager chrome-gnome-shell")
-    retry_command "apt install -y sassc libglib2.0-dev libxml2-utils")
+    retry_command "apt install -y gnome-tweaks gnome-shell-extension-manager chrome-gnome-shell"
+    retry_command "apt install -y sassc libglib2.0-dev libxml2-utils"
     
     # 安装 WhiteSur 主题（仅在线模式）
     if [ "$ONLINE_MODE" = true ]; then
@@ -661,7 +857,7 @@ if [ "$INSTALL_DESKTOP" = true ]; then
     
     # 安装常用 GNOME 扩展
     info "正在安装 GNOME 扩展..."
-    retry_command "apt install -y gnome-shell-extension-dash-to-dock gnome-shell-extension-arc-menu")
+    retry_command "apt install -y gnome-shell-extension-dash-to-dock gnome-shell-extension-arc-menu"
     
     # 配置 Dash to Dock
     DASH_CONF="${USER_HOME}/.config/dash-to-dock"
@@ -691,6 +887,7 @@ fi
 
 # ===================== 5. Grub 美化工具安装 =====================
 if [ "$INSTALL_DESKTOP" = true ] || [ "$INSTALL_TERMINAL" = true ]; then
+    show_progress
     info "===== 开始安装 Grub 美化工具 ====="
     if ! dpkg -l | grep -q "grub-customizer"; then
         retry_command "add-apt-repository -y ppa:danielrichter2007/grub-customizer"
@@ -704,6 +901,7 @@ fi
 
 # ===================== 6. 华为 MateBook 15d 指纹适配 =====================
 if [ "$INSTALL_FINGERPRINT" = true ]; then
+    show_progress
     info "===== 开始配置指纹登录 & sudo 验证 ====="
     
     # 安装基础指纹组件
@@ -748,6 +946,7 @@ if [ "$INSTALL_FINGERPRINT" = true ]; then
 fi
 
 # ===================== 验证安装结果 =====================
+show_progress
 verify_installation
 
 # ===================== 脚本结束提示 =====================

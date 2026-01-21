@@ -305,7 +305,7 @@ configure_elan_fingerprint() {
     retry_command "apt install -y libfprint-2-tod-elan"
 }
 
-# 优化系统性能
+# 优化系统性能（已删除禁用蓝牙）
 optimize_system_performance() {
     info "优化系统性能..."
     
@@ -339,9 +339,8 @@ optimize_system_performance() {
         fi
     fi
     
-    # 禁用不必要的服务
+    # 禁用不必要的服务（已删除蓝牙）
     local unnecessary_services=(
-        "bluetooth.service"
         "ModemManager.service"
         "teamviewerd.service"
         "snapd.service"
@@ -986,6 +985,7 @@ info "  7. 性能优化："
 info "     - Tracker 服务已禁用"
 info "     - 交换性已优化为 10"
 info "     - 已安装预加载"
+info "     - 蓝牙功能已保留"
 info ""
 info "  8. 故障排除："
 info "     查看完整日志：less $LOG_FILE"

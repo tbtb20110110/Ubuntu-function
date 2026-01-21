@@ -134,6 +134,48 @@ EOF
     fi
 }
 
+# 设置国内镜像源
+setup_mirror_sources() {
+    if [ "$ONLINE_MODE" = true ]; then
+        # 简单检测用户地理位置
+        local country_code="CN"
+        if command -v curl >/dev/null 2>&1; then
+            country_code=$(curl -s --max-time 3 https://ipapi.co/country/ 2>/dev/null || echo "CN")
+        fi
+        
+        if [ "$country_code" = "CN" ]; then
+            info "检测到中国大陆位置，建议使用国内镜像源加速下载"
+            read -p "是否使用清华源替换官方源？(y/N): " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                backup_file "/etc/apt/sources.list"
+                
+                local version_codename=$(lsb_release -cs)
+                cat > /etc/apt/sources.list << EOF
+# 清华大学镜像源
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ $version_codename main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ $version_codename-updates main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ $version_codename-backports main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ $version_codename-security main restricted universe multiverse
+
+# 源码镜像（可选）
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ $version_codename main restricted universe multiverse
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ $version_codename-updates main restricted universe multiverse
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ $version_codename-backports main restricted universe multiverse
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ $version_codename-security main restricted universe multiverse
+EOF
+                
+                # 设置GitHub镜像
+                export GITHUB_RAW_ALT_URL="https://raw.fastgit.org"
+                export GIT_TERMINAL_PROMPT=0
+                
+                info "已配置清华源和GitHub镜像"
+                register_rollback_step "mv /etc/apt/sources.list.bak /etc/apt/sources.list 2>/dev/null || true"
+            fi
+        fi
+    fi
+}
+
 # 检查 Ubuntu 版本
 check_ubuntu_version() {
     if [ ! -f /etc/os-release ]; then
@@ -160,37 +202,114 @@ check_ubuntu_version() {
     info "检测到 Ubuntu $VERSION ($VERSION_CODENAME)"
 }
 
+# 检查系统资源
+check_system_resources() {
+    info "检查系统资源..."
+    
+    # 检查磁盘空间
+    if command -v df >/dev/null 2>&1; then
+        local free_space=$(df -BG / | awk 'NR==2 {print $4}' | tr -d 'G' 2>/dev/null || echo "0")
+        if [ "$free_space" -lt 10 ]; then
+            warn "警告：根分区可用空间不足 ($free_space GB)，建议至少 10 GB"
+            read -p "是否继续？(y/N): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                exit 1
+            fi
+        fi
+    fi
+    
+    # 检查内存
+    if command -v free >/dev/null 2>&1; then
+        local total_mem=$(free -g | awk 'NR==2 {print $2}' 2>/dev/null || echo "0")
+        if [ "$total_mem" -lt 4 ]; then
+            warn "警告：系统内存较小 ($total_mem GB)，美化可能会影响性能"
+        fi
+    fi
+    
+    # 检查CPU
+    local cpu_cores=1
+    if command -v nproc >/dev/null 2>&1; then
+        cpu_cores=$(nproc)
+    fi
+    
+    info "系统资源：${cpu_cores}核CPU，${total_mem:-?}GB内存，${free_space:-?}GB可用空间"
+}
+
 # 改进的网络连接检查
 check_internet_connection() {
     info "检查网络连接..."
+    
     local test_urls=(
         "8.8.8.8"
         "1.1.1.1" 
         "114.114.114.114"
+        "223.5.5.5"  # 阿里DNS
         "www.baidu.com"
         "www.github.com"
+        "mirrors.aliyun.com"
+        "mirrors.tuna.tsinghua.edu.cn"
     )
     
+    local success=false
     for url in "${test_urls[@]}"; do
-        if ping -c 1 -W 2 "$url" >/dev/null 2>&1; then
+        if timeout 2 ping -c 1 "$url" >/dev/null 2>&1; then
             green "网络连接正常 (通过 $url)"
-            return 0
+            success=true
+            break
         fi
     done
     
-    # 尝试HTTP连接
-    if curl -s --connect-timeout 5 https://raw.githubusercontent.com >/dev/null 2>&1; then
-        green "网络连接正常 (通过HTTPS)"
-        return 0
+    if [ "$success" = false ]; then
+        # 尝试HTTP连接
+        for url in "http://mirrors.aliyun.com" "https://raw.githubusercontent.com"; do
+            if timeout 5 curl -s --head "$url" >/dev/null 2>&1; then
+                green "网络连接正常 (通过 HTTP/HTTPS: $url)"
+                success=true
+                break
+            fi
+        done
     fi
     
-    warn "无法连接到互联网"
-    read -p "是否继续离线安装？(y/N): " -n 1 -r
+    if [ "$success" = false ]; then
+        warn "无法连接到互联网"
+        read -p "是否继续离线安装？(y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            return 1
+        else
+            red "请检查网络连接后重试"
+            info "可选方案："
+            info "1. 设置代理：export HTTP_PROXY=http://your-proxy:port"
+            info "2. 使用离线模式运行：运行脚本时自动检测"
+            exit 1
+        fi
+    fi
+    
+    return 0
+}
+
+# 安装计划摘要显示
+show_installation_summary() {
     echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        return 1
-    else
-        exit 1
+    info "=============================================="
+    info "          安装计划摘要"
+    info "=============================================="
+    info "将安装以下组件："
+    [ "$INSTALL_TERMINAL" = true ] && info "  ✓ 终端美化 (Zsh, Oh-My-Zsh, Powerlevel10k)"
+    [ "$INSTALL_DESKTOP" = true ] && info "  ✓ 桌面美化 (WhiteSur主题, GNOME扩展)"
+    [ "$INSTALL_FINGERPRINT" = true ] && info "  ✓ 指纹支持 (华为设备优化)"
+    [ "$INSTALL_PERFORMANCE" = true ] && info "  ✓ 系统性能优化"
+    info "运行模式: $( [ "$ONLINE_MODE" = true ] && echo "在线" || echo "离线" )"
+    info "预计时间: 10-30分钟 (取决于网络速度)"
+    info "磁盘空间: 约 1-2 GB"
+    info "=============================================="
+    
+    read -p "是否继续安装？(y/N): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        info "用户取消安装"
+        exit 0
     fi
 }
 
@@ -403,11 +522,25 @@ install_nerd_fonts() {
     local font_dir="/usr/share/fonts/truetype/nerd-fonts"
     mkdir -p "$font_dir"
     
-    # 下载并安装 FiraCode Nerd Font
-    local font_url="https://github.com/ryanoasis/nerd-fonts/releases/download/v3.0.2/FiraCode.zip"
-    local font_file="/tmp/FiraCode-NerdFont.zip"
+    # 尝试多个下载源
+    local font_urls=(
+        "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.0.2/FiraCode.zip"
+        "https://ghproxy.com/https://github.com/ryanoasis/nerd-fonts/releases/download/v3.0.2/FiraCode.zip"
+        "https://hub.fgit.ml/ryanoasis/nerd-fonts/releases/download/v3.0.2/FiraCode.zip"
+    )
     
-    if wget --show-progress --timeout=30 --tries=3 -O "$font_file" "$font_url" 2>/dev/null; then
+    local font_file="/tmp/FiraCode-NerdFont.zip"
+    local downloaded=false
+    
+    for font_url in "${font_urls[@]}"; do
+        info "尝试从 $font_url 下载..."
+        if wget --show-progress --timeout=30 --tries=2 -O "$font_file" "$font_url" 2>/dev/null; then
+            downloaded=true
+            break
+        fi
+    done
+    
+    if [ "$downloaded" = true ]; then
         unzip -q "$font_file" -d "$font_dir"
         rm -f "$font_file"
         
@@ -590,6 +723,9 @@ info "检测到普通用户：$SUDO_USER，主目录：$USER_HOME"
 # 检查系统版本
 check_ubuntu_version
 
+# 检查系统资源
+check_system_resources
+
 # 设置网络代理
 set_network_proxy
 
@@ -608,6 +744,12 @@ else
     ONLINE_MODE=false
     warn "离线模式：仅安装本地可用组件"
 fi
+
+# 设置国内镜像源
+setup_mirror_sources
+
+# 显示安装计划摘要
+show_installation_summary
 
 # 设置 GitHub 相关环境变量
 export GIT_SSL_NO_VERIFY=1
@@ -660,7 +802,11 @@ if [ "$INSTALL_TERMINAL" = true ]; then
     
     # 下载并安装 Nerd Fonts
     if [ "$ONLINE_MODE" = true ]; then
-        NERD_FONT_URL="https://github.com/ryanoasis/nerd-fonts/releases/download/v3.0.2/FiraCode.zip"
+        NERD_FONT_URLS=(
+            "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.0.2/FiraCode.zip"
+            "https://ghproxy.com/https://github.com/ryanoasis/nerd-fonts/releases/download/v3.0.2/FiraCode.zip"
+        )
+        
         FIRACODE_NERD_DIR="/usr/share/fonts/truetype/firacode-nerd"
         
         if [ ! -d "$FIRACODE_NERD_DIR" ]; then
@@ -668,14 +814,23 @@ if [ "$INSTALL_TERMINAL" = true ]; then
             mkdir -p /tmp/firacode-nerd
             cd /tmp/firacode-nerd
             
-            if retry_command "wget --show-progress --timeout=30 --tries=3 -O FiraCode.zip '$NERD_FONT_URL'"; then
-                mkdir -p "$FIRACODE_NERD_DIR"
-                unzip -q FiraCode.zip -d "$FIRACODE_NERD_DIR"
-                fc-cache -fv
-                info "FiraCode Nerd Font 安装成功！"
-            else
+            local downloaded=false
+            for NERD_FONT_URL in "${NERD_FONT_URLS[@]}"; do
+                info "尝试从 $NERD_FONT_URL 下载..."
+                if retry_command "wget --show-progress --timeout=30 --tries=2 -O FiraCode.zip '$NERD_FONT_URL'"; then
+                    mkdir -p "$FIRACODE_NERD_DIR"
+                    unzip -q FiraCode.zip -d "$FIRACODE_NERD_DIR"
+                    fc-cache -fv
+                    info "FiraCode Nerd Font 安装成功！"
+                    downloaded=true
+                    break
+                fi
+            done
+            
+            if [ "$downloaded" = false ]; then
                 warn "无法下载 FiraCode Nerd Font，使用系统自带的 Fira Code 字体"
             fi
+            
             cd -
             rm -rf /tmp/firacode-nerd
         else
@@ -689,11 +844,24 @@ if [ "$INSTALL_TERMINAL" = true ]; then
         info "正在安装 oh-my-zsh..."
         
         if [ "$ONLINE_MODE" = true ]; then
-            # 使用官方脚本
-            if retry_command "curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -o /tmp/install-oh-my-zsh.sh"; then
-                sudo -u $SUDO_USER sh /tmp/install-oh-my-zsh.sh --unattended --keep-zshrc
-                rm -f /tmp/install-oh-my-zsh.sh
-            else
+            # 尝试多个安装源
+            local install_scripts=(
+                "https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh"
+                "https://ghproxy.com/https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh"
+            )
+            
+            local installed=false
+            for install_script in "${install_scripts[@]}"; do
+                info "尝试从 $install_script 下载安装脚本..."
+                if retry_command "curl -fsSL $install_script -o /tmp/install-oh-my-zsh.sh"; then
+                    sudo -u $SUDO_USER sh /tmp/install-oh-my-zsh.sh --unattended --keep-zshrc
+                    rm -f /tmp/install-oh-my-zsh.sh
+                    installed=true
+                    break
+                fi
+            done
+            
+            if [ "$installed" = false ]; then
                 # 手动安装
                 warn "无法下载 oh-my-zsh 安装脚本，尝试手动安装..."
                 retry_command "sudo -u $SUDO_USER git clone https://github.com/ohmyzsh/ohmyzsh.git '$OH_MY_ZSH_DIR'"
@@ -714,9 +882,22 @@ if [ "$INSTALL_TERMINAL" = true ]; then
     if [ ! -d "$P10K_DIR" ]; then
         if [ "$ONLINE_MODE" = true ]; then
             info "正在安装 Powerlevel10k 主题..."
-            if retry_command "sudo -u $SUDO_USER git clone --depth=1 https://github.com/romkatv/powerlevel10k.git '$P10K_DIR'"; then
-                info "Powerlevel10k 安装成功！"
-            else
+            local p10k_repos=(
+                "https://github.com/romkatv/powerlevel10k.git"
+                "https://hub.fgit.ml/romkatv/powerlevel10k.git"
+            )
+            
+            local cloned=false
+            for p10k_repo in "${p10k_repos[@]}"; do
+                info "尝试从 $p10k_repo 克隆..."
+                if retry_command "sudo -u $SUDO_USER git clone --depth=1 $p10k_repo '$P10K_DIR'"; then
+                    info "Powerlevel10k 安装成功！"
+                    cloned=true
+                    break
+                fi
+            done
+            
+            if [ "$cloned" = false ]; then
                 red "无法安装 Powerlevel10k，请检查网络连接"
             fi
         else
@@ -755,13 +936,31 @@ if [ "$INSTALL_TERMINAL" = true ]; then
         # 安装 zsh-autosuggestions
         if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-autosuggestions" ]; then
             info "正在安装 zsh-autosuggestions 插件..."
-            retry_command "sudo -u $SUDO_USER git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions.git '${ZSH_CUSTOM}/plugins/zsh-autosuggestions'"
+            local autosuggest_repos=(
+                "https://github.com/zsh-users/zsh-autosuggestions.git"
+                "https://hub.fgit.ml/zsh-users/zsh-autosuggestions.git"
+            )
+            
+            for repo in "${autosuggest_repos[@]}"; do
+                if retry_command "sudo -u $SUDO_USER git clone --depth=1 $repo '${ZSH_CUSTOM}/plugins/zsh-autosuggestions'"; then
+                    break
+                fi
+            done
         fi
         
         # 安装 zsh-syntax-highlighting
         if [ ! -d "${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting" ]; then
             info "正在安装 zsh-syntax-highlighting 插件..."
-            retry_command "sudo -u $SUDO_USER git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting.git '${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting'"
+            local highlight_repos=(
+                "https://github.com/zsh-users/zsh-syntax-highlighting.git"
+                "https://hub.fgit.ml/zsh-users/zsh-syntax-highlighting.git"
+            )
+            
+            for repo in "${highlight_repos[@]}"; do
+                if retry_command "sudo -u $SUDO_USER git clone --depth=1 $repo '${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting'"; then
+                    break
+                fi
+            done
         fi
         
         # 更新 .zshrc 中的插件配置
@@ -805,7 +1004,20 @@ if [ "$INSTALL_DESKTOP" = true ]; then
         WHITESUR_THEME_DIR="/tmp/WhiteSur-gtk-theme"
         if [ ! -d "$WHITESUR_THEME_DIR" ]; then
             info "正在克隆 WhiteSur 主题..."
-            if retry_command "sudo -u $SUDO_USER git clone --depth=1 https://github.com/vinceliuice/WhiteSur-gtk-theme.git '$WHITESUR_THEME_DIR'"; then
+            local whitesur_repos=(
+                "https://github.com/vinceliuice/WhiteSur-gtk-theme.git"
+                "https://hub.fgit.ml/vinceliuice/WhiteSur-gtk-theme.git"
+            )
+            
+            local cloned=false
+            for repo in "${whitesur_repos[@]}"; do
+                if retry_command "sudo -u $SUDO_USER git clone --depth=1 $repo '$WHITESUR_THEME_DIR'"; then
+                    cloned=true
+                    break
+                fi
+            done
+            
+            if [ "$cloned" = true ]; then
                 cd "$WHITESUR_THEME_DIR"
                 ./install.sh -t all -N mojave -c Dark
                 ./install.sh -w all
@@ -822,7 +1034,20 @@ if [ "$INSTALL_DESKTOP" = true ]; then
         info "正在安装 WhiteSur 图标..."
         WHITESUR_ICON_DIR="/tmp/WhiteSur-icon-theme"
         if [ ! -d "$WHITESUR_ICON_DIR" ]; then
-            if retry_command "sudo -u $SUDO_USER git clone --depth=1 https://github.com/vinceliuice/WhiteSur-icon-theme.git '$WHITESUR_ICON_DIR'"; then
+            local icon_repos=(
+                "https://github.com/vinceliuice/WhiteSur-icon-theme.git"
+                "https://hub.fgit.ml/vinceliuice/WhiteSur-icon-theme.git"
+            )
+            
+            local cloned=false
+            for repo in "${icon_repos[@]}"; do
+                if retry_command "sudo -u $SUDO_USER git clone --depth=1 $repo '$WHITESUR_ICON_DIR'"; then
+                    cloned=true
+                    break
+                fi
+            done
+            
+            if [ "$cloned" = true ]; then
                 cd "$WHITESUR_ICON_DIR"
                 ./install.sh
                 cd -
@@ -837,7 +1062,20 @@ if [ "$INSTALL_DESKTOP" = true ]; then
         info "正在安装 WhiteSur 光标..."
         WHITESUR_CURSOR_DIR="/tmp/WhiteSur-cursors"
         if [ ! -d "$WHITESUR_CURSOR_DIR" ]; then
-            if retry_command "sudo -u $SUDO_USER git clone --depth=1 https://github.com/vinceliuice/WhiteSur-cursors.git '$WHITESUR_CURSOR_DIR'"; then
+            local cursor_repos=(
+                "https://github.com/vinceliuice/WhiteSur-cursors.git"
+                "https://hub.fgit.ml/vinceliuice/WhiteSur-cursors.git"
+            )
+            
+            local cloned=false
+            for repo in "${cursor_repos[@]}"; do
+                if retry_command "sudo -u $SUDO_USER git clone --depth=1 $repo '$WHITESUR_CURSOR_DIR'"; then
+                    cloned=true
+                    break
+                fi
+            done
+            
+            if [ "$cloned" = true ]; then
                 cd "$WHITESUR_CURSOR_DIR"
                 ./install.sh
                 cd -
